@@ -40,6 +40,7 @@ class MatchSolution:
     montants: list
     dates_echeance: list
     somme: int
+    fiable: bool
 
 
 @st.cache_data(show_spinner=False)
@@ -230,6 +231,7 @@ def build_solution_rows(df_group: pd.DataFrame, combos, mois_echeance: str):
     rows = []
     for combo in combos:
         slice_df = df_group.loc[list(combo)]
+        fiable = slice_df["Type de pièce"].astype(str).str.upper().eq("RC").any()
         rows.append(
             MatchSolution(
                 code_tiers=str(slice_df["Code Tiers"].iloc[0]),
@@ -240,6 +242,7 @@ def build_solution_rows(df_group: pd.DataFrame, combos, mois_echeance: str):
                 montants=slice_df["Montant Signé"].astype(str).tolist(),
                 dates_echeance=slice_df["Date d'échéance"].dt.strftime("%Y-%m-%d").tolist(),
                 somme=int(slice_df["montant_int"].sum()),
+                fiable=fiable,
             )
         )
     return rows
@@ -272,14 +275,12 @@ def main():
     }
 
     results = []
-    no_solution = []
 
     grouped = df_filtered.groupby("Code Tiers", sort=False)
     progress = st.progress(0)
 
     for idx, (code_tiers, group_df) in enumerate(grouped, start=1):
         progress.progress(idx / len(grouped))
-        raison_sociale = str(group_df["Raison sociale"].iloc[0])
         if len(group_df) > MAX_GROUP_SIZE:
             sub_groups = group_df.groupby("mois_echeance", sort=False)
         else:
@@ -289,15 +290,6 @@ def main():
             combos, reason = find_matches_for_group(sub_df)
             if reason == "ok":
                 results.extend(build_solution_rows(sub_df, combos, mois_echeance))
-            else:
-                no_solution.append(
-                    {
-                        "Code Tiers": code_tiers,
-                        "Raison sociale": raison_sociale,
-                        "Mois d'échéance": mois_echeance,
-                        "Raison": reason,
-                    }
-                )
 
     elapsed = time.monotonic() - start_time
     stats.update(
@@ -325,26 +317,41 @@ def main():
                     "Somme (centimes)": r.somme,
                     "Montants": " | ".join(r.montants),
                     "Dates d'échéance": " | ".join(r.dates_echeance),
+                    "Fiable": "Oui" if r.fiable else "À vérifier",
                 }
                 for r in results
             ]
         )
-        st.dataframe(df_results, use_container_width=True)
-        csv_bytes = df_results.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Télécharger les solutions (CSV)",
-            data=csv_bytes,
-            file_name="lettrages_solutions.csv",
-            mime="text/csv",
-        )
+        df_fiables = df_results[df_results["Fiable"] == "Oui"].copy()
+        df_a_verifier = df_results[df_results["Fiable"] == "À vérifier"].copy()
+
+        st.markdown("### Lettrages fiables (avec règlement RC)")
+        if not df_fiables.empty:
+            st.dataframe(df_fiables, use_container_width=True)
+            csv_bytes = df_fiables.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Télécharger les lettrages fiables (CSV)",
+                data=csv_bytes,
+                file_name="lettrages_fiables.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Aucun lettrage fiable trouvé.")
+
+        st.markdown("### Lettrages à vérifier (sans RC)")
+        if not df_a_verifier.empty:
+            st.dataframe(df_a_verifier, use_container_width=True)
+            csv_bytes = df_a_verifier.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Télécharger les lettrages à vérifier (CSV)",
+                data=csv_bytes,
+                file_name="lettrages_a_verifier.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Aucun lettrage à vérifier trouvé.")
     else:
         st.info("Aucun lettrage trouvé.")
-
-    st.subheader("Codes tiers sans solution")
-    if no_solution:
-        st.dataframe(pd.DataFrame(no_solution), use_container_width=True)
-    else:
-        st.success("Tous les codes tiers ont au moins une solution.")
 
     st.subheader("Commandes de lancement")
     st.code("pip install -r requirements.txt\nstreamlit run app.py")
